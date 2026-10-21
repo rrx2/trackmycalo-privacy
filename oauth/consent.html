@@ -1,0 +1,315 @@
+<!doctype html>
+<!--
+  TrackMyCalo connector page for Supabase Auth's OAuth 2.1 server.
+  Published as oauth/consent.html on the GitHub Pages site (rrx2/trackmycalo-privacy).
+  With ?authorization_id=… it is the consent screen Claude sends users to;
+  without it, it explains how to connect and lists connected apps so they can be revoked.
+  Only the publishable key is here: every request runs as the signed-in user under RLS.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>TrackMyCalo · Claude</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f5f2; --card: #ffffff; --text: #1d1d1f; --muted: #6b6b70; --line: #e3e1dc;
+      --accent: #1f7a4d; --accent-text: #ffffff; --danger: #b3261e; --warn-bg: #fff4d6; --warn-text: #6b4e00;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.5;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #111113; --card: #1c1c1f; --text: #f2f2f4; --muted: #a1a1a8; --line: #313136;
+        --accent: #3fb97a; --accent-text: #0b1f14; --danger: #ff8a80; --warn-bg: #3a2f10; --warn-text: #ffd978; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); }
+    main { max-width: 440px; margin: 0 auto; padding: 40px 16px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 24px; }
+    h1 { font-size: 1.35rem; line-height: 1.25; margin: 0 0 12px; }
+    h2 { font-size: 1rem; margin: 24px 0 8px; }
+    p { margin: 0 0 12px; }
+    .muted { color: var(--muted); font-size: .92rem; }
+    .brand { font-weight: 600; color: var(--muted); margin-bottom: 16px; letter-spacing: .01em; }
+    .stack { display: grid; gap: 10px; margin-top: 18px; }
+    button { font: inherit; border-radius: 10px; padding: 12px 16px; border: 1px solid var(--line);
+      background: transparent; color: var(--text); cursor: pointer; width: 100%; }
+    button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+    button.link { width: auto; padding: 0; border: 0; color: var(--accent); background: none; }
+    button:disabled { opacity: .55; cursor: default; }
+    .warn { background: var(--warn-bg); color: var(--warn-text); border-radius: 10px; padding: 12px; margin: 12px 0; }
+    .error { color: var(--danger); }
+    .url { display: flex; gap: 8px; align-items: stretch; margin: 8px 0 4px; }
+    .url code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: .85rem; padding: 10px; border-radius: 8px;
+      border: 1px solid var(--line); }
+    .url button { width: auto; white-space: nowrap; }
+    ol { padding-left: 20px; margin: 0 0 12px; }
+    ul.grants { list-style: none; padding: 0; margin: 0; }
+    ul.grants li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0;
+      border-top: 1px solid var(--line); }
+    ul.grants li button { width: auto; padding: 6px 12px; color: var(--danger); }
+    footer { margin-top: 16px; text-align: center; }
+    a { color: var(--accent); }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <div class="brand">TrackMyCalo</div>
+    <div id="view" aria-live="polite"></div>
+  </div>
+  <footer class="muted"><a id="privacy" href="https://rrx2.github.io/trackmycalo-privacy/">Privacy</a></footer>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js"
+  integrity="sha384-Rj26LVGvoeRVR6+mwQmFfcR3QOBEwT+ZmuCWpuiqeTzJpCs0ER4ITAWGb4Hiy3Ok" crossorigin="anonymous"></script>
+<script>
+"use strict";
+const SUPABASE_URL = "https://benhdhelbpeilkacfphz.supabase.co";
+const PUBLISHABLE_KEY = "sb_publishable_JteUJZZ4uHGa77rKonUZeQ__D4K3w_O";
+const CONNECTOR_URL = `${SUPABASE_URL}/functions/v1/mcp`;
+// Claude's OAuth callbacks; anything else gets a warning on the consent screen.
+const CLAUDE_HOSTS = ["claude.ai", "claude.com"];
+
+const strings = {
+  en: {
+    signInTitle: "Connect Claude to TrackMyCalo", signInBody: "Sign in with the account you use in the TrackMyCalo app.",
+    apple: "Continue with Apple", google: "Continue with Google",
+    consentTitle: "Allow {client} to use your diary?",
+    consentBody: "{client} will be able to read your meals and saved foods, and add, change or delete meals in your TrackMyCalo diary. It never sees your password.",
+    account: "Signed in as {account}.", returnTo: "After you choose, you go back to {host}.",
+    notClaude: "This request does not come from Claude. Deny it unless you set this app up yourself.",
+    allow: "Allow", deny: "Deny", otherAccount: "Use another account", working: "One moment…",
+    approved: "Access granted. You can go back to Claude.", denied: "Request denied. You can close this page.",
+    expired: "This request has expired or was already used. Start the connection again from Claude.",
+    failed: "Something went wrong: {message}",
+    connectTitle: "Log meals with Claude",
+    connectSteps: ["In Claude, open Settings → Connectors → Add custom connector.", "Paste this URL and add it:", "Claude opens this page: sign in and allow access."],
+    copy: "Copy", copied: "Copied", connectedTitle: "Connected apps", none: "No apps are connected.",
+    revoke: "Disconnect", signOut: "Sign out", missingKey: "Sign in to see connected apps.",
+  },
+  it: {
+    signInTitle: "Collega Claude a TrackMyCalo", signInBody: "Accedi con l'account che usi nell'app TrackMyCalo.",
+    apple: "Continua con Apple", google: "Continua con Google",
+    consentTitle: "Vuoi permettere a {client} di usare il tuo diario?",
+    consentBody: "{client} potrà leggere i tuoi pasti e i cibi salvati, e aggiungere, modificare o eliminare pasti nel tuo diario TrackMyCalo. Non vedrà mai la tua password.",
+    account: "Accesso come {account}.", returnTo: "Dopo la scelta torni su {host}.",
+    notClaude: "Questa richiesta non viene da Claude. Rifiutala, a meno che non abbia configurato tu questa app.",
+    allow: "Consenti", deny: "Rifiuta", otherAccount: "Usa un altro account", working: "Un momento…",
+    approved: "Accesso consentito. Puoi tornare su Claude.", denied: "Richiesta rifiutata. Puoi chiudere questa pagina.",
+    expired: "Questa richiesta è scaduta o è già stata usata. Ricomincia il collegamento da Claude.",
+    failed: "Qualcosa è andato storto: {message}",
+    connectTitle: "Registra i pasti con Claude",
+    connectSteps: ["In Claude apri Impostazioni → Connettori → Aggiungi connettore personalizzato.", "Incolla questo URL e aggiungilo:", "Claude apre questa pagina: accedi e consenti l'accesso."],
+    copy: "Copia", copied: "Copiato", connectedTitle: "App collegate", none: "Nessuna app collegata.",
+    revoke: "Scollega", signOut: "Esci", missingKey: "Accedi per vedere le app collegate.",
+  },
+  fr: {
+    signInTitle: "Connecter Claude à TrackMyCalo", signInBody: "Connectez-vous avec le compte que vous utilisez dans l'app TrackMyCalo.",
+    apple: "Continuer avec Apple", google: "Continuer avec Google",
+    consentTitle: "Autoriser {client} à utiliser votre journal ?",
+    consentBody: "{client} pourra lire vos repas et vos aliments enregistrés, et ajouter, modifier ou supprimer des repas dans votre journal TrackMyCalo. Il ne voit jamais votre mot de passe.",
+    account: "Connecté en tant que {account}.", returnTo: "Après votre choix, vous revenez sur {host}.",
+    notClaude: "Cette demande ne vient pas de Claude. Refusez-la, sauf si vous avez configuré cette app vous-même.",
+    allow: "Autoriser", deny: "Refuser", otherAccount: "Utiliser un autre compte", working: "Un instant…",
+    approved: "Accès autorisé. Vous pouvez revenir sur Claude.", denied: "Demande refusée. Vous pouvez fermer cette page.",
+    expired: "Cette demande a expiré ou a déjà été utilisée. Relancez la connexion depuis Claude.",
+    failed: "Une erreur s'est produite : {message}",
+    connectTitle: "Enregistrer vos repas avec Claude",
+    connectSteps: ["Dans Claude, ouvrez Réglages → Connecteurs → Ajouter un connecteur personnalisé.", "Collez cette URL et ajoutez-la :", "Claude ouvre cette page : connectez-vous et autorisez l'accès."],
+    copy: "Copier", copied: "Copié", connectedTitle: "Apps connectées", none: "Aucune app connectée.",
+    revoke: "Déconnecter", signOut: "Se déconnecter", missingKey: "Connectez-vous pour voir les apps connectées.",
+  },
+  es: {
+    signInTitle: "Conectar Claude con TrackMyCalo", signInBody: "Inicia sesión con la cuenta que usas en la app TrackMyCalo.",
+    apple: "Continuar con Apple", google: "Continuar con Google",
+    consentTitle: "¿Permitir que {client} use tu diario?",
+    consentBody: "{client} podrá leer tus comidas y alimentos guardados, y añadir, cambiar o eliminar comidas en tu diario de TrackMyCalo. Nunca verá tu contraseña.",
+    account: "Sesión iniciada como {account}.", returnTo: "Después de elegir, vuelves a {host}.",
+    notClaude: "Esta solicitud no viene de Claude. Recházala salvo que hayas configurado tú esta app.",
+    allow: "Permitir", deny: "Rechazar", otherAccount: "Usar otra cuenta", working: "Un momento…",
+    approved: "Acceso permitido. Puedes volver a Claude.", denied: "Solicitud rechazada. Puedes cerrar esta página.",
+    expired: "Esta solicitud ha caducado o ya se usó. Vuelve a iniciar la conexión desde Claude.",
+    failed: "Algo salió mal: {message}",
+    connectTitle: "Registra tus comidas con Claude",
+    connectSteps: ["En Claude, abre Ajustes → Conectores → Añadir conector personalizado.", "Pega esta URL y añádela:", "Claude abre esta página: inicia sesión y permite el acceso."],
+    copy: "Copiar", copied: "Copiado", connectedTitle: "Apps conectadas", none: "No hay apps conectadas.",
+    revoke: "Desconectar", signOut: "Cerrar sesión", missingKey: "Inicia sesión para ver las apps conectadas.",
+  },
+  de: {
+    signInTitle: "Claude mit TrackMyCalo verbinden", signInBody: "Melde dich mit dem Konto an, das du in der TrackMyCalo-App nutzt.",
+    apple: "Weiter mit Apple", google: "Weiter mit Google",
+    consentTitle: "{client} den Zugriff auf dein Tagebuch erlauben?",
+    consentBody: "{client} kann deine Mahlzeiten und gespeicherten Lebensmittel lesen sowie Mahlzeiten in deinem TrackMyCalo-Tagebuch hinzufügen, ändern oder löschen. Dein Passwort sieht es nie.",
+    account: "Angemeldet als {account}.", returnTo: "Nach deiner Wahl geht es zurück zu {host}.",
+    notClaude: "Diese Anfrage kommt nicht von Claude. Lehne sie ab, außer du hast diese App selbst eingerichtet.",
+    allow: "Erlauben", deny: "Ablehnen", otherAccount: "Anderes Konto verwenden", working: "Einen Moment…",
+    approved: "Zugriff erlaubt. Du kannst zu Claude zurückkehren.", denied: "Anfrage abgelehnt. Du kannst diese Seite schließen.",
+    expired: "Diese Anfrage ist abgelaufen oder wurde schon verwendet. Starte die Verbindung erneut in Claude.",
+    failed: "Etwas ist schiefgelaufen: {message}",
+    connectTitle: "Mahlzeiten mit Claude erfassen",
+    connectSteps: ["Öffne in Claude Einstellungen → Konnektoren → Eigenen Konnektor hinzufügen.", "Füge diese URL ein und speichere:", "Claude öffnet diese Seite: anmelden und Zugriff erlauben."],
+    copy: "Kopieren", copied: "Kopiert", connectedTitle: "Verbundene Apps", none: "Keine Apps verbunden.",
+    revoke: "Trennen", signOut: "Abmelden", missingKey: "Melde dich an, um verbundene Apps zu sehen.",
+  },
+};
+const language = (navigator.languages || [navigator.language || "en"])
+  .map((tag) => tag.slice(0, 2).toLowerCase()).find((code) => strings[code]) || "en";
+const t = strings[language];
+document.documentElement.lang = language;
+const fill = (text, values) => text.replace(/\{(\w+)\}/g, (_, key) => values[key] ?? "");
+
+// DOM helpers: every server-provided value is inserted as text, never as HTML.
+const view = document.getElementById("view");
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  Object.assign(node, props);
+  for (const child of children) node.append(child);
+  return node;
+}
+function show(...nodes) { view.replaceChildren(...nodes); }
+function busy(button) { button.disabled = true; button.textContent = t.working; }
+function fail(error) {
+  const message = error && error.message ? error.message : String(error);
+  show(el("p", { className: "error", textContent: fill(t.failed, { message }) }));
+}
+
+const client = supabase.createClient(SUPABASE_URL, PUBLISHABLE_KEY, {
+  auth: { flowType: "pkce", detectSessionInUrl: true, persistSession: true, storageKey: "trackmycalo-connect" },
+});
+const params = new URLSearchParams(location.search);
+const rawID = params.get("authorization_id");
+const authorizationID = rawID && /^[A-Za-z0-9_-]{1,128}$/.test(rawID) ? rawID : null;
+const pageURL = location.origin + location.pathname + (authorizationID ? `?authorization_id=${encodeURIComponent(authorizationID)}` : "");
+
+function signInView(message) {
+  const buttons = ["apple", "google"].map((provider) => {
+    const button = el("button", { className: provider === "apple" ? "primary" : "", textContent: t[provider] });
+    button.addEventListener("click", async () => {
+      busy(button);
+      const { error } = await client.auth.signInWithOAuth({ provider, options: { redirectTo: pageURL } });
+      if (error) fail(error);
+    });
+    return button;
+  });
+  show(
+    el("h1", { textContent: t.signInTitle }),
+    el("p", { className: "muted", textContent: authorizationID ? t.signInBody : t.missingKey }),
+    ...(message ? [el("p", { className: "error", textContent: message })] : []),
+    el("div", { className: "stack" }, ...buttons),
+  );
+}
+
+function accountLabel(user) {
+  return user.email || user.user_metadata?.email || user.id;
+}
+
+async function leave(url) {
+  // The page needs the session only for this decision; Claude gets its own tokens.
+  await client.auth.signOut({ scope: "local" }).catch(() => {});
+  location.assign(url);
+}
+
+async function consentView(user) {
+  const { data, error } = await client.auth.oauth.getAuthorizationDetails(authorizationID);
+  if (error || !data) return show(el("p", { className: "error", textContent: t.expired }));
+  if (!("authorization_id" in data) && data.redirect_url) return leave(data.redirect_url); // Already approved before.
+
+  const name = (data.client && (data.client.name || data.client.client_name)) || "Claude";
+  let host = "";
+  try { host = new URL(data.redirect_uri).hostname; } catch { /* shown without a host */ }
+  const fromClaude = CLAUDE_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
+  const allow = el("button", { className: "primary", textContent: t.allow });
+  const deny = el("button", { textContent: t.deny });
+  const other = el("button", { className: "link", textContent: t.otherAccount });
+  const decide = (approve) => async () => {
+    busy(approve ? allow : deny);
+    allow.disabled = deny.disabled = true;
+    const options = { skipBrowserRedirect: true };
+    const result = approve
+      ? await client.auth.oauth.approveAuthorization(authorizationID, options)
+      : await client.auth.oauth.denyAuthorization(authorizationID, options);
+    if (result.error || !result.data?.redirect_url) return fail(result.error || t.expired);
+    show(el("p", { textContent: approve ? t.approved : t.denied }));
+    leave(result.data.redirect_url);
+  };
+  allow.addEventListener("click", decide(true));
+  deny.addEventListener("click", decide(false));
+  other.addEventListener("click", async () => {
+    await client.auth.signOut({ scope: "local" }).catch(() => {});
+    signInView();
+  });
+  show(
+    el("h1", { textContent: fill(t.consentTitle, { client: name }) }),
+    el("p", { textContent: fill(t.consentBody, { client: name }) }),
+    ...(fromClaude ? [] : [el("p", { className: "warn", textContent: t.notClaude })]),
+    el("p", { className: "muted", textContent: fill(t.account, { account: accountLabel(user) }) }),
+    ...(host ? [el("p", { className: "muted", textContent: fill(t.returnTo, { host }) })] : []),
+    el("div", { className: "stack" }, allow, deny),
+    el("p", { className: "muted", style: "margin-top:16px" }, other),
+  );
+}
+
+async function manageView(user) {
+  const copy = el("button", { textContent: t.copy });
+  copy.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(CONNECTOR_URL); copy.textContent = t.copied; } catch { /* user can select the text */ }
+  });
+  const steps = el("ol", {}, ...t.connectSteps.map((step) => el("li", { textContent: step })));
+  const nodes = [
+    el("h1", { textContent: t.connectTitle }),
+    steps,
+    el("div", { className: "url" }, el("code", { textContent: CONNECTOR_URL }), copy),
+  ];
+  if (!user) {
+    const signIn = el("button", { textContent: t.missingKey });
+    signIn.addEventListener("click", () => signInView());
+    return show(...nodes, el("div", { className: "stack" }, signIn));
+  }
+  const list = el("ul", { className: "grants" });
+  const signOut = el("button", { className: "link", textContent: t.signOut });
+  signOut.addEventListener("click", async () => {
+    await client.auth.signOut({ scope: "local" }).catch(() => {});
+    manageView(null);
+  });
+  show(...nodes, el("h2", { textContent: t.connectedTitle }), list,
+    el("p", { className: "muted", style: "margin-top:16px" }, fill(t.account, { account: accountLabel(user) }), " ", signOut));
+  const { data, error } = await client.auth.oauth.listGrants();
+  if (error) return list.replaceChildren(el("li", { className: "error", textContent: fill(t.failed, { message: error.message }) }));
+  const grants = Array.isArray(data) ? data : [];
+  if (grants.length === 0) return list.replaceChildren(el("li", { className: "muted", textContent: t.none }));
+  list.replaceChildren(...grants.map((grant) => {
+    const clientID = grant.client?.id || grant.client_id;
+    const label = grant.client?.name || grant.client?.client_name || grant.client_name || clientID;
+    const revoke = el("button", { textContent: t.revoke });
+    const row = el("li", {}, el("span", { textContent: label }), revoke);
+    revoke.addEventListener("click", async () => {
+      busy(revoke);
+      const { error } = await client.auth.oauth.revokeGrant({ clientId: clientID });
+      if (error) { revoke.disabled = false; revoke.textContent = t.revoke; return alert(error.message); }
+      row.remove();
+      if (!list.children.length) list.replaceChildren(el("li", { className: "muted", textContent: t.none }));
+    });
+    return row;
+  }));
+}
+
+(async () => {
+  try {
+    // Completes a returning Apple/Google sign-in (PKCE ?code=…), then drops the OAuth
+    // parameters from the address bar while keeping authorization_id.
+    const { data: { session } } = await client.auth.getSession();
+    const loginError = params.get("error_description");
+    if (params.has("code") || params.has("error")) history.replaceState(null, "", pageURL);
+    const user = session ? (await client.auth.getUser()).data.user : null;
+    if (!authorizationID) return manageView(user);
+    if (!user) return signInView(loginError);
+    await consentView(user);
+  } catch (error) {
+    fail(error);
+  }
+})();
+</script>
+</body>
+</html>
